@@ -1,0 +1,28 @@
+// protocol/sqlrepl.proto
+
+syntax = "proto3";
+
+package protocol;
+
+option go_package = "sqlrepl/internal/protocol";
+
+message QueryResult {
+  repeated string columns = 1;
+  repeated Row rows = 2;
+  string message = 3;
+  string error = 4;
+}
+
+message Row {
+  repeated string values = 1; // String values for simplicity
+}
+
+message DBParams {
+  string dbtype = 1;
+  string connstring = 2;
+}
+
+message QueryRequest {
+  DBParams params = 1;
+  string query = 2;
+}

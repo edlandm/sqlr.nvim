@@ -2,6 +2,8 @@ local name = 'sqlr'
 package.loaded[name] = {}
 local M = package.loaded[name]
 
+local client= require('sqlr.client')
+
 ---@type {loclist?: table[]}
 M.results = {}
 
@@ -44,11 +46,12 @@ function M.env_info()
 end
 
 ---return `s` only if it is a supported database vendor
----@param s string
+---@param s string|Sqlr.db_vendor
 ---@return Sqlr.db_vendor?
 local function val_env_type(s)
   -- TODO: add sqlite, posgres, duckdb
   if vim.tbl_contains({ 'sqlserver', 'oracle' }, s) then
+    ---@type Sqlr.db_vendor
     return s
   end
 end
@@ -57,7 +60,7 @@ end
 ---@param env_name string either filename or absolute path of environment file
 ---@return Sqlr.env?
 local function get_env(env_name)
-  local _name = name .. '.set_env'
+  local _name = name .. '.get_env'
   local file
   local stat = vim.uv.fs_stat(env_name)
   if stat then
@@ -82,9 +85,9 @@ local function get_env(env_name)
   local env = chunk()
   assert(env, ('%s :: %s did not return anything'):format(_name, file))
 
-  for _, field in ipairs({ 'type', 'host', 'user', 'password', 'databases' }) do
+  for _, field in ipairs({ 'type', 'connstring', 'databases' }) do
     assert(env[field], ('%s :: %s does not define required field: %s'):format(_name, file, field))
-    assert(env[field] ~= '', ('%s :: %s: %s cannot be empty'):format(_name, file, field))
+    assert(vim.fn.empty(env[field]) == 0, ('%s :: %s: %s cannot be empty'):format(_name, file, field))
   end
 
   local env_type = val_env_type(env.type)
@@ -105,7 +108,7 @@ function M.set_env(env_name)
   local _name = name..'.set_env'
   local ok, env = pcall(get_env, env_name)
   if not ok or not env then
-    vim.notify(('%s :: unable to load environment "%s"'):format(_name, env_name), vim.log.levels.ERROR, {})
+    vim.notify(('%s :: unable to load environment "%s": %s'):format(_name, env_name, env), vim.log.levels.ERROR, {})
     return
   end
   M.env = env
@@ -591,9 +594,36 @@ local function csvview_setup()
   })
 end
 
+---convert an array of bytes to hexadecimal string
+---@param s string looks like '[191 80 150 109 118 147 67 12 224 83 199 130 189 10 120 144]'
+---@return string still a string, but formatted correctly
+local function string_to_guid(s)
+  local nums = {}
+  for num in s:gmatch('%d+') do
+    table.insert(nums, tonumber(num))
+  end
+  local hex = vim.tbl_map(function(d) return string.format('%02X', d) end, nums)
+  return string.format('%s%s%s%s-%s%s-%s%s-%s%s-%s%s%s%s%s%s',
+    hex[1], hex[2],  hex[3],  hex[4],  hex[5],  hex[6],  hex[7],  hex[8],
+    hex[9], hex[10], hex[11], hex[12], hex[13], hex[14], hex[15], hex[16])
+end
+
+---render certain values as more human-readible strings
+---@param val string
+---@return string
+local function db_val_to_string(val)
+  if val:match('^%[[%d ]+%]$') then --possible guid
+    local ok, guid = pcall(string_to_guid, val)
+    if ok then
+      return guid
+    end
+  end
+  return val
+end
+
 ---default results-viewer
 ---@param err string? error message, if any
----@param results? cmd_output the stdout and stdin from the command
+---@param results Sqlr.QueryResult[]
 local function view_results(err, results)
   if err then
     vim.notify('Sqlr: ' .. err, vim.log.levels.ERROR, {})
@@ -617,7 +647,7 @@ local function view_results(err, results)
       csvview_setup()
     end
 
-    for key, buf in pairs(M.buffers) do
+    for _, buf in pairs(M.buffers) do
       vim.api.nvim_set_option_value('buftype', 'nofile', { scope = 'local', buf = buf })
 
       vim.api.nvim_buf_set_keymap(buf, 'n', 'R', '', {
@@ -645,16 +675,45 @@ local function view_results(err, results)
     M.windows = {}
   end
 
+  local results_lines = {}
+  local messages_lines = {}
+  for _, result in ipairs(results) do
+    if result.message and vim.fn.empty(result.message) == 0 then
+      for _, line in ipairs(vim.split(result.message, '\n')) do
+        table.insert(messages_lines, line)
+      end
+    end
+
+    if result.error and vim.fn.empty(result.error) == 0 then
+      for _, line in ipairs(vim.split(result.error, '\n')) do
+        table.insert(messages_lines, 'ERROR: '..line)
+      end
+    end
+
+    if not result.columns or vim.fn.empty(result.columns) == 1 then
+      break
+    end
+
+    if #results_lines > 0 then
+      table.insert(results_lines, '')
+    end
+
+    table.insert(results_lines, table.concat(result.columns, M.opts.col_sep))
+    for _, row in ipairs(result.rows) do
+      table.insert(results_lines, table.concat(vim.tbl_map(db_val_to_string, row.values), M.opts.col_sep))
+    end
+  end
+
   vim.api.nvim_set_option_value('readonly', false, { scope = 'local', buf = M.buffers.results })
-  vim.api.nvim_buf_set_lines(M.buffers.results, 0, -1, true, results.stdout)
+  vim.api.nvim_buf_set_lines(M.buffers.results, 0, -1, true, results_lines)
   vim.api.nvim_set_option_value('readonly', true, { scope = 'local', buf = M.buffers.results })
 
   vim.api.nvim_set_option_value('readonly', false, { scope = 'local', buf = M.buffers.messages })
-  vim.api.nvim_buf_set_lines(M.buffers.messages, 0, -1, true, results.stderr)
+  vim.api.nvim_buf_set_lines(M.buffers.messages, 0, -1, true, messages_lines)
   vim.api.nvim_set_option_value('readonly', true, { scope = 'local', buf = M.buffers.messages })
 
   local buf = M.buffers.results
-  if #results.stdout == 0 and #results.stderr > 0 then
+  if #results_lines == 0 and #messages_lines > 0 then
     buf = M.buffers.messages
   end
 
@@ -670,7 +729,7 @@ local function view_results(err, results)
   end
 
   -- populate location list with the beginning of each resultset
-  M.results.loclist = vendors[M.env.type].get_results_starting_lines(results.stdout)
+  M.results.loclist = vendors[M.env.type].get_results_starting_lines(results_lines)
   M.toggle_results('results')
 
   local count_resultsets = #vim.fn.getloclist(M.windows.results.win)
@@ -689,58 +748,130 @@ local function view_results(err, results)
   -- TODO: add support for csvlens
 end
 
----@diagnostic disable
+---Parses a range of lines in a buffer into a list of SQL statements using Treesitter.
+---@param buf_id integer The buffer ID.
+---@param start_line? integer Start line number (1-indexed).
+---@param end_line? integer End line number (1-indexed, inclusive).
+---@return string[] A list of SQL statements.
+local function parse_sql_statements(buf_id, start_line, end_line)
+  local parser = vim.treesitter.get_parser(buf_id, 'sql')
+  if not parser then
+    return {}
+  end
 
----run the given sql
----@param sql string|string[]
+  local tree = parser:parse()[1]
+
+  local query = vim.treesitter.query.parse('sql', [[
+    (statement) @statement
+    (block) @block
+    (program) @program
+    ]])
+
+  local start_row = start_line and start_line - 1 or 0
+  local end_row = end_line and end_line - 1 or vim.api.nvim_buf_line_count(buf_id) - 1
+
+  local results = {}
+  for capture_name, node in query:iter_captures(tree:root(), buf_id) do
+    local s_row, _, e_row, _ = node:range()
+
+    -- Check if the node is fully contained in the range (end-inclusive)
+    local is_node_after_start = start_row <= s_row
+    local is_node_before_end = end_row >= e_row
+    if is_node_after_start and is_node_before_end then
+      table.insert(results, {
+        node = node,
+        capture_name = capture_name,
+      })
+    end
+  end
+
+  -- Remove results that are contained inside of other results.  Loop backwards.
+  for i = #results, 1, -1 do
+    local current_node = results[i].node
+    local current_s_row, _, current_e_row, _ = current_node:range()
+
+    for j = i - 1, 1, -1 do
+      local other_node = results[j].node
+      local other_s_row, _, other_e_row, _ = other_node:range()
+
+      --If the "other" node completely contains the "current" node, remove the "current" node
+      if other_s_row <= current_s_row and other_e_row >= current_e_row then
+        table.remove(results, i)
+        break
+      end
+    end
+  end
+
+  local statements = {}
+  for i = 1, #results do
+    local node = results[i].node
+    local s_row, s_col, e_row, e_col = node:range()
+
+    local text = vim.api.nvim_buf_get_text(buf_id, s_row, s_col, e_row, e_col, {})
+    local trimmed_lines = vim.tbl_map(function(s)
+      local rtrimmed = (s:gsub('%s*%-%-.*$', ''))
+      local ltrimmed = (rtrimmed:gsub('^%s*', ''))
+      return ltrimmed
+    end, text)
+    local statement_text = table.concat(trimmed_lines, ' ')
+    table.insert(statements, statement_text)
+  end
+  return statements
+end
+
+---lookup the given env/database from opts or fallback to currently selected
 ---@param opts Sqlr.run_opts
-local function run(sql, opts) end
-
----run the indicated range of the current buffer as sql
----@param s integer
----@param e integer
----@param opts Sqlr.run_opts
-local function run(s, e, opts) end
-
----run the visual selection as sql
----@param opts Sqlr.run_opts
-local function run(opts) end
-
----@diagnostic enable
+---@return Sqlr.env environment
+---@return string database
+local function get_exec_env(opts)
+  local _name = name..'.get_exec_env'
+  ---@type Sqlr.env, string
+  local env, db = M.env, M.db
+  if opts.env then
+    local ok, _env
+    ok, _env = pcall(get_env, opts.env)
+    assert(ok, ('%s :: unable to load environment "%s": %s'):format(_name, opts.env, _env))
+    env = assert(_env, ('failed to load environment: %s'):format(opts.env))
+    db = opts.db or env.databases[1]
+  end
+  return env, db
+end
 
 ---run sql; can be supplied as:
---- - a string
+--- - a string (expected to contain only one statement)
 --- - a list of strings (lines, in that case)
 --- - a range of lines (start, end) of the current buffer
 --- - the current visual selection (NOTE: whole lines will always be selected)
----@param arg1  string|string[]|integer|Sqlr.run_opts
----@param arg2? Sqlr.run_opts|integer
----@param arg3? Sqlr.run_opts?
-function M.run(arg1, arg2, arg3)
+---@param opts Sqlr.run_opts?
+---@param s? string|integer sql or start of range
+---@param e? integer end of range
+function M.run(opts, s, e)
   local _name = name .. '.run'
-  local lines
-  local _opts
-  if type(arg1) == 'string' and (arg2 == nil or type(arg2) == 'table') then
-    vim.notify(('%s :: sql passed as string'):format(_name), vim.log.levels.DEBUG, {})
-    lines = vim.split(arg1, '\n')
-    _opts = arg2 or {}
-  elseif type(arg1) == 'table' and type(arg1[1]) == 'string' and (arg2 == nil or type(arg2) == 'table') then
-    vim.notify(('%s :: sql passed as list of lines'):format(_name), vim.log.levels.DEBUG, {})
-    lines = arg1
-    _opts = arg2 or {}
-  elseif type(arg1) == 'number' and type(arg2) == 'number' and (arg3 == nil or type(arg3) == 'table') then
-    vim.notify(('%s :: sql indicated with range'):format(_name), vim.log.levels.DEBUG, {})
-    local s = arg1
-    local e = arg2
-    if s > 0 then
-      s = s-1
+
+  opts = vim.tbl_deep_extend('keep', opts or {}, {
+    callback = view_results
+  })
+
+  ---@type Sqlr.env, string
+  local env, db = get_exec_env(opts)
+
+  assert(env, 'Environment not set')
+  assert(db,  'Database not set')
+
+  local statements
+  if s then
+    if type(s) == 'string' then
+      vim.notify(('%s :: passed sql as string'):format(_name), vim.log.levels.TRACE, {})
+      statements = { (s:gsub('\n', '\r')) }
+    else
+      vim.notify(('%s :: passed range'):format(_name), vim.log.levels.TRACE, {})
+      if not e or e == -1 then
+        e = vim.api.nvim_buf_line_count(0)
+      end
+      statements = parse_sql_statements(0, s, e)
     end
-    lines = vim.api.nvim_buf_get_lines(0, s, e, true)
-    _opts = arg3 or {}
-  else
-    vim.notify(('%s :: determining sql from visual selection'):format(_name), vim.log.levels.DEBUG, {})
-    assert(arg1 == nil or type(arg1) == 'table', ('%s :: unexpected argument: %s'):format(_name, vim.inspect(arg1)))
-    _opts = arg1 or {}
+  else -- get range from visual selection
+    vim.notify(('%s :: determining sql from visual selection'):format(_name), vim.log.levels.TRACE, {})
 
     -- leave visual mode so that '< and '> get set
     vim.api.nvim_feedkeys(
@@ -748,163 +879,33 @@ function M.run(arg1, arg2, arg3)
       'itx',
       false)
 
-    local s = vim.api.nvim_buf_get_mark(0, '<')
-    local e = vim.api.nvim_buf_get_mark(0, '>')
-    assert(s[1] > 0, '< mark not set')
-    assert(e[1] > 0, '> mark not set')
+    s = vim.api.nvim_buf_get_mark(0, '<')[1]
+    e = vim.api.nvim_buf_get_mark(0, '>')[1]
+    assert(s > 0, '< mark not set')
+    assert(e > 0, '> mark not set')
 
-    lines = vim.api.nvim_buf_get_lines(0, s[1]-1, e[1], true)
+    statements = parse_sql_statements(0, s-1, e)
   end
 
-  assert(lines and type(lines) == 'table',
-    ('%s :: unable to get lines'):format(_name))
-  assert(#lines > 0,
-    ('%s :: lines cannot empty'):format(_name))
-  assert(type(lines[1]) == 'string',
-    ('%s :: lines must be a list of strings'):format(_name))
-
-  local opts = vim.tbl_deep_extend('keep', _opts or {}, {
-    callback = view_results
-  })
-
-  local env, db
-  if opts.env then
-    local ok
-    ok, env = pcall(get_env, opts.env)
-    if not ok or not env then
-      vim.notify(('%s :: unable to load environment "%s"'):format(_name, opts.env), vim.log.levels.ERROR, {})
-      return
-    end
-    db = opts.db or env.databases[1]
-  else
-    env = M.env
-    db = M.db
-  end
-
-  -- TODO: It would be cool to open the env/db picker in this case (if has snacks)
-  -- so that the user can stay in the groove
-  assert(env, 'Environment not set')
-  assert(db,  'Database not set')
+  assert(statements and #statements > 0, 'No statements provided/found')
 
   vim.notify(('%s :: running sql'):format(_name), vim.log.levels.DEBUG)
   if not opts.silent then
-    print('Running SQL...')
+    vim.notify(('%s :: Running SQL'):format(name), vim.log.levels.INFO)
   end
 
-  ---@type string
-  local password
-  if type(env.password) == 'function' then
-    password = env:password()
-  else
-    ---@type string
-    password = env.password ---@diagnostic disable-line it's a string, damnit
-  end
+  local data = table.concat(statements, '\n')
+  M.client
+    :connect(env, db)
+    :send(data, opts.callback)
+    -- :send(data, function(err, results) dd { err, results } end)
+    --[[
+    :send(data, function(err, results)
+        dd { err, results }
+        opts.callback(err, results)
+      end)
+    --]]
 
-  ---@type string[]
-  local cmd
-  if env.cmd then
-    cmd = env.cmd(env, db, lines, M.opts)
-  elseif env.type == 'sqlserver' then
-    cmd = {
-      'sqlcmd',
-      '-C', -- trust server certificate
-      -- '-W', -- trim spaces (leave this off)
-      '-r', '1', -- print all messages to stderr (even those that are not errors)
-      '-S', env.host,
-      '-d', db,
-      '-U', env.user,
-      '-P', password,
-      '-s', M.opts.col_sep,
-      '-Q', vim.fn.join(lines, '\n'),
-    }
-    if opts.noerror then
-      table.insert(cmd, '-n')
-    end
-  elseif env.type == 'oracle' then
-      cmd = {
-        'sqlplus',
-        '-F', -- fast
-        '-S', -- silent
-        '-M', ("CSV ON DELIMITER '%s' QUOTE OFF"):format(M.opts.col_sep), -- markup as csv
-        '-nologintime',
-        ('%s/%s@%s/%s'):format(env.user, password, env.host, db),
-      }
-      table.insert(lines, 1, "SET NULL 'NULL';")
-      table.insert(lines, 1, "SET SERVEROUTPUT ON SIZE 1000000;")
-      table.insert(lines, 1, "SET SQLBLANKLINES ON;")
-      table.insert(lines, 1, "SET FEEDBACK ON;")
-      table.insert(lines, "SHOW ERRORS;")
-  end
-
-  -- dd { cmd=cmd, lines=lines }
-  local out_lines, err_lines = {}, {}
-  local jid = vim.fn.jobstart(cmd, {
-    stdout_buffered = true,
-    on_stdout = function(_, data)
-      if not data or vim.fn.empty(data) == 1 then
-        return
-      end
-
-      -- remove empty lines from the beginning
-      while #data > 0 and data[1]:match('^%s*$') do
-        table.remove(data, 1)
-      end
-
-      -- remove empty lines from the end
-      while #data > 0 and data[#data]:match('^%s*$') do
-        table.remove(data, #data)
-      end
-
-      if #data > 0 then
-        out_lines = data
-      end
-    end,
-    on_stderr = function(_, data)
-      if not data or vim.fn.empty(data) == 1 then
-        return
-      end
-
-      -- remove empty lines from the beginning
-      while #data > 0 and  data[1]:match('^%s*$') do
-        table.remove(data, 1)
-      end
-
-      -- remove empty lines from the end
-      while #data > 0 and data[#data]:match('^%s*$') do
-        table.remove(data, #data)
-      end
-
-      if #data > 0 then
-        err_lines = data
-      end
-    end,
-    on_exit = function(_, exit_code, event_type)
-      vim.cmd({ cmd='echo', args = { '""' }}) -- clear status line
-      vim.notify(('%s :: ran with exit code: %d'):format(_name, exit_code), vim.log.levels.DEBUG)
-      if exit_code ~= 0 then
-        vim.notify(('%s :: command returned non-zero exit code: %d (%s)'):format(_name, exit_code, event_type), vim.log.levels.ERROR)
-      elseif vim.fn.empty(out_lines) == 1 and vim.fn.empty(err_lines) == 1 then
-        if not opts.silent then
-          -- this is okay, but we notify the user so they know the sql ran
-          vim.notify(('%s :: query ran and produced no output'):format(_name), vim.log.levels.INFO)
-        end
-        return
-      end
-
-      -- some vendors (oracle/sqlplus) don't print error messages to stderr,
-      -- so we might need to do a little pre-processing
-      local output = {stdout=out_lines, stderr=err_lines}
-      local parse_errors = vendors[env.type].parse_errors
-      if parse_errors then
-        output = parse_errors(output)
-      end
-
-      return opts.callback(nil, output)
-    end
-  })
-
-  vim.fn.chansend(jid, lines)
-  vim.fn.chanclose(jid, 'stdin')
 end
 
 -- SETUP =====================================================================
@@ -956,10 +957,6 @@ M.opts = {
 -- Opening new sql buffers can be defaulted to the same env/db used by the
 -- previous buffer
 
--- TODO: allow the ability to set variables (tied to a buffer)
--- I'd like the abitily to parse a buffer and generate a form for any
--- undeclared variables
-
 ---perform setup, pre-select env/db if SQLR_ENV or SQLR_DB env vars set
 ---@param opts Sqlr.opts
 ---@return Sqlr
@@ -1000,8 +997,10 @@ function M.setup(opts)
     callback = create_user_commands,
   })
 
+  M.client = client.Client.new(opts.client or {})
+
   return M
 end
 
----@type Sqlr
+--@type Sqlr
 return M
