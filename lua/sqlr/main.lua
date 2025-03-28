@@ -895,11 +895,6 @@ function M.run(opts, s, e)
 
   assert(statements and #statements > 0, 'No statements provided/found')
 
-  vim.notify(('%s :: running sql'):format(_name), vim.log.levels.DEBUG)
-  if not opts.silent then
-    vim.notify(('%s :: Running SQL'):format(name), vim.log.levels.INFO)
-  end
-
   local data = table.concat(statements, '\n')
   M.client
     :connect(env, db)

@@ -12,11 +12,19 @@ local protocol = require('sqlr.protocol')
 ---@field error string
 
 ---@class Sqlr.Client.Connection
+---@field host string hostname of database server
+---@field port integer port for db connection
+---@field dbtype db_vendor
+---@field connstring string string
+---@field queue [string, function][] queue of sql+callback tuples
+---@field _conn tcp.connection
+---@field is_processing boolean
+---@field spinner? table field to hold the fidget spinner handle (if using)
+--- methods
 ---@field new fun(host:string, port:integer, dbtype:db_vendor, connstring:string):Sqlr.Client.Connection
 ---@field connect fun(self:Sqlr.Client.Connection):Sqlr.Client.Connection returns tcp socket connection, sets self._conn
 ---@field disconnect fun(self:Sqlr.Client.Connection)
 ---@field send fun(self:Sqlr.Client.Connection, sql:string, callback: fun(err: string?, results:Sqlr.QueryResult[]))
----@field _conn tcp.connection
 
 local Connection = {}
 Connection.__index = Connection
@@ -114,14 +122,36 @@ function Connection:send(sql, callback)
   end
 end
 
+local function start_spinner(conn)
+  local ok, progress = pcall(require, 'fidget.progress')
+  if not ok then
+    vim.notify('SQLR :: Running SQL...', vim.log.levels.INFO)
+    return
+  end
+
+  conn.spinner = progress.handle.create({
+    message = 'Running SQL...',
+    lsp_client = { name = 'SQLR.'..conn.dbtype },
+  })
+end
+
+local function stop_spinner(conn)
+  if not conn.spinner then return end
+  conn.spinner:finish()
+  conn.spinner = nil
+end
+
 function Connection:process_request()
   local name = 'Connection:process_request'
   if #self.queue == 0 then
     self.is_processing = false
+    stop_spinner(self)
     return
   end
 
   self.is_processing = true
+  start_spinner(self)
+
   local sql, callback = unpack(table.remove(self.queue, 1))
 
   if not self._conn then
