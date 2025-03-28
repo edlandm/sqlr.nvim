@@ -522,12 +522,18 @@ local function csvview_cursor()
   -- ensure that csview is enabled and refreshed for the current buffer contents
   local buf = M.buffers.csvview
   local csvview = require('csvview')
+  local csvview_opts = {
+    view = {
+      delimiter = M.opts.col_sep,
+      header_lnum = 1,
+    }
+  }
   if csvview.is_enabled(buf) then
     -- refresh
     csvview.disable(buf)
-    csvview.enable(buf, { delimiter = M.opts.col_sep })
+    csvview.enable(buf, csvview_opts)
   else
-    csvview.enable(buf, { delimiter = M.opts.col_sep })
+    csvview.enable(buf, csvview_opts)
   end
 end
 
