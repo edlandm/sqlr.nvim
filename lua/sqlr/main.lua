@@ -902,6 +902,13 @@ local completion_functions = {
       return M.env.databases
     end
   end,
+  connections = function()
+    local names = {}
+    for k, _ in pairs(M.client.connections) do
+      table.insert(names, k)
+    end
+    return names
+  end,
 }
 
 --- Create commands
