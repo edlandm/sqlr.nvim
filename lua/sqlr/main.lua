@@ -332,25 +332,6 @@ local vendors = {
       end
       return lines
     end,
-    csview_pre_set_cursor = function (s, e, lines)
-      ---@diagnostic disable-next-line
-      if #lines <= 2 then -- scalar without header
-        vim.api.nvim_win_set_cursor(0, {e, 0})
-        lines = { lines[#lines] }
-        return lines
-      end
-      if lines[1]:match('rows affected%)') then
-        vim.api.nvim_win_set_cursor(0, {s+1, 0})
-      else
-        vim.api.nvim_win_set_cursor(0, {s, 0})
-      end
-      local err, csv_lines = sqlserver_rowset_to_csv(lines, M.opts.col_sep)
-      if not csv_lines then
-        vim.notify(err, vim.log.levels.DEBUG, {})
-        return lines
-      end
-      return csv_lines
-    end,
     parse_errors = function(output)
       local _output = {
         stdout = {},
