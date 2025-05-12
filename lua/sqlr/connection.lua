@@ -25,6 +25,7 @@ local protocol = require('sqlr.protocol')
 ---@field connect fun(self:Sqlr.Client.Connection):Sqlr.Client.Connection returns tcp socket connection, sets self._conn
 ---@field disconnect fun(self:Sqlr.Client.Connection)
 ---@field send fun(self:Sqlr.Client.Connection, sql:string, callback: fun(err: string?, results:Sqlr.QueryResult[]))
+---@field process_request fun(self:Sqlr.Client.Connection)
 
 local Connection = {}
 Connection.__index = Connection
