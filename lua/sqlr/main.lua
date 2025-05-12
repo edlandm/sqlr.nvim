@@ -930,6 +930,28 @@ local function create_user_commands()
       nargs = 1,
       complete = completion_functions.database,
     })
+
+  vim.api.nvim_buf_create_user_command(0, 'SqlrConnectionReset',
+    function(opts)
+      if not M.client then return end
+
+      local cname = vim.trim(opts.args or '')
+      if not cname or cname == '' then return end
+
+      local conn = M.client.connections[cname]
+      if not conn then return end
+
+      conn:disconnect()
+      conn.is_processing = false
+      conn.queue = {}
+      conn:connect()
+      conn:process_request() -- since we cleared the queue, this will stop the spinner
+    end,
+    {
+      desc = 'Reset the given connection (cancelling all queued queries if any)',
+      nargs = 1,
+      complete = completion_functions.connections,
+    })
 end
 
 ---@type Sqlr.opts
