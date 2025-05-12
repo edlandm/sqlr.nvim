@@ -405,7 +405,7 @@ local vendors = {
 local function create_popup_window(buf, opts)
   local winopts = {
     style = 'split',
-    relative = 'win',
+    relative = 'editor',
     position = 'bottom',
     height = #vim.api.nvim_buf_get_lines(buf, 0, -1, true),
     max_height = vim.api.nvim_win_get_height(0) / 2,
@@ -423,7 +423,7 @@ local function create_popup_window(buf, opts)
 
   if opts then
     ---@diagnostic disable-next-line
-    winopts = vim.tbl_deep_extend('keep', opts, winopts)
+    winopts = vim.tbl_deep_extend('keep', opts or {}, winopts)
   end
 
   if type(M.opts.win) == 'table' then
@@ -451,7 +451,7 @@ function M.toggle_results(mode)
   local _name = name..'.toggle_results'
   if mode then
     local buf = assert(M.buffers[mode], ('%s :: invalid mode "%s"'):format(_name, mode))
-    local win = M.windows.results
+    local win = M.windows.results or create_popup_window(buf)
     if not win.closed then
       win:close()
     end
@@ -467,7 +467,9 @@ function M.toggle_results(mode)
     return
   end
 
-  M.windows.results:toggle()
+  local buf = M.buffers.csvview or M.buffers.results
+  local win = M.windows.results or create_popup_window(buf)
+  win:toggle()
 
   local is_visible = is_window_visible_in_current_tab(M.windows.results.win)
   local has_lines = vim.fn.empty(M.results.loclist) == 0
