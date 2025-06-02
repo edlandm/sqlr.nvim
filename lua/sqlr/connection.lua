@@ -163,7 +163,7 @@ function Connection:process_request()
   -- use char(29) (group separator) to signal end of batch
   conn:send(('%s\n%s\n'):format(sql, string.char(29)))
 
-  local timer = vim.uv.new_timer()
+  local timer = assert(vim.uv.new_timer(), 'unable to create timer')
 
   vim.notify(('%s :: request sent, awaiting response'):format(name), vim.log.levels.TRACE, {})
   local results = {}
@@ -183,7 +183,10 @@ function Connection:process_request()
       if err then
         vim.notify(('%s :: %s'):format(name, err), vim.log.levels.TRACE, {})
         timer:stop()
-        callback(err, nil)
+        local ok, _err = pcall(callback, err, nil)
+        if not ok then
+          vim.notify(('%s :: callback failed: %s'):format(name, _err), vim.log.levels.ERROR, {})
+        end
         self:process_request()
         return
       end
@@ -193,7 +196,10 @@ function Connection:process_request()
         vim.notify(('%s :: end of batch'):format(name, length_bytes, result), vim.log.levels.TRACE, {})
         timer:stop()
         local _results = vim.tbl_map(protocol.parse_result, results)
-        callback(nil, _results)
+        local ok, _err = pcall(callback, nil, _results)
+        if not ok then
+          vim.notify(('%s :: callback failed: %s'):format(name, _err), vim.log.levels.ERROR, {})
+        end
         self:process_request()
         return
       end
