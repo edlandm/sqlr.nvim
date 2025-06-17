@@ -601,6 +601,7 @@ end
 ---@param val string
 ---@return string
 local function db_val_to_string(val)
+  val = val:gsub('\n', ' ')
   if val:match('^%[[%d ]+%]$') then --possible guid
     local ok, guid = pcall(string_to_guid, val)
     if ok then
@@ -953,6 +954,31 @@ local function create_user_commands()
       desc = 'Reset the given connection (cancelling all queued queries if any)',
       nargs = 1,
       complete = completion_functions.connections,
+    })
+
+  vim.api.nvim_buf_create_user_command(0, 'SqlrRestartServer',
+    function()
+      if not M.client then return end
+      if not M.client.process then
+        vim.notify('Unable to stop sqlrepl server process (is it running locally?)')
+        return
+      end
+
+      vim.notify('SQLR: Stopping Server', vim.log.levels.INFO, {})
+      M.client:stop_server()
+
+      for _, conn in pairs(M.client.connections) do
+        conn:disconnect()
+        conn.is_processing = false
+        conn.queue = {}
+        conn:process_request() -- since we cleared the queue, this will stop the spinner
+      end
+
+      M.client = client.Client.new(M.opts.client)
+      vim.notify('SQLR: Server Restarted', vim.log.levels.INFO, {})
+    end,
+    {
+      desc = 'Restart the sqlrepl server (only works if running locally)',
     })
 end
 

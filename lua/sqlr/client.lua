@@ -136,7 +136,7 @@ function Client:start_server()
 
   -- make sure to clean up after ourselves if we start the server
   vim.api.nvim_create_autocmd('VimLeave', {
-    callback = function() vim.uv.process_kill(handle) end
+    callback = function() self:stop_server() end
   })
 
   self.process = { handle=handle, pid=pid }
@@ -146,6 +146,24 @@ function Client:start_server()
   self:log(msg)
 
   return assert(tonumber(pid), ('%s :: start_server: unable to parse pid into number: %s'):format(name, pid))
+end
+
+---attempt to kill the locally running sqlrepl server
+function Client:stop_server()
+  if not self.process then return end -- server not running locally
+
+  if self.process.handle then
+    local sucess, err, errname = vim.uv.process_kill(self.process.handle, 9)
+    if not sucess then
+      vim.notify(('Error trying to stop server: %s: %s'):format(errname, err), vim.log.levels.ERROR, {})
+    end
+    return
+  end
+
+  local sucess, err, errname = vim.uv.kill(self.process.pid, 9)
+  if not sucess then
+    vim.notify(('Error trying to stop server: %s: %s'):format(errname, err), vim.log.levels.ERROR, {})
+  end
 end
 
 ---start a connection for a given env/db

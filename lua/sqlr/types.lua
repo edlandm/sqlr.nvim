@@ -43,10 +43,11 @@
 ---@class Sqlr.Client
 ---@field opts Sqlr.Client.opts
 ---@field setup fun(opts?:Sqlr.Client.opts)
----@field pid? integer process-id of sqlrepl server
+---@field process? { pid:integer } the process if sqlrepl is running locally
 ---@field connections table<string, Sqlr.Client.Connection>
 ---@field get_server_pid fun(self:Sqlr.Client):integer?
 ---@field start_server fun(self:Sqlr.Client):integer?
+---@field stop_server fun(self:Sqlr.Client)
 ---@field connect fun(self:Sqlr.Client, env:Sqlr.env, db:string, initial_statements?:string[]):Sqlr.Client.Connection
 ---@field disconnect fun(self:Sqlr.Client, env:Sqlr.env, db:string)
 ---@field send fun(self:Sqlr.Client, env:Sqlr.env, db:string, callback: fun(err:string?, output?:Sqlr.QueryResult[]))
