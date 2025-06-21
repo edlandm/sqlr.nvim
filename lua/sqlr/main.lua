@@ -350,7 +350,8 @@ local vendors = {
       end
 
       return output
-    end
+    end,
+    batch_separator = 'GO',
   },
   oracle = {
     get_results_starting_lines = function(results_lines)
@@ -394,7 +395,8 @@ local vendors = {
       end
 
       return cleaned_output
-    end
+    end,
+    batch_separator = '/';
   }
 }
 
@@ -611,19 +613,7 @@ local function db_val_to_string(val)
   return val
 end
 
----default results-viewer
----@param err string? error message, if any
----@param results Sqlr.QueryResult[]
-local function view_results(err, results)
-  if err then
-    vim.notify('Sqlr: ' .. err, vim.log.levels.ERROR, {})
-    return
-  end
-
-  if not results then
-    return
-  end
-
+local function init_buffers()
   if not M.buffers then
     M.buffers = {
       results  = vim.api.nvim_create_buf(true, true),
@@ -660,6 +650,22 @@ local function view_results(err, results)
       })
     end
   end
+end
+
+---default results-viewer
+---@param err string? error message, if any
+---@param results Sqlr.QueryResult[]
+local function view_results(err, results)
+  if err then
+    vim.notify('Sqlr: ' .. err, vim.log.levels.ERROR, {})
+    return
+  end
+
+  if not results then
+    return
+  end
+
+  init_buffers()
 
   if not M.windows then
     M.windows = {}
@@ -827,7 +833,7 @@ local function get_exec_env(opts)
   return env, db
 end
 
----run sql; can be supplied as:
+---run sql and display results; can be supplied as:
 --- - a string (expected to contain only one statement)
 --- - a list of strings (lines, in that case)
 --- - a range of lines (start, end) of the current buffer
@@ -890,7 +896,147 @@ function M.run(opts, s, e)
         opts.callback(err, results)
       end)
     --]]
+end
 
+local function default_exec_callback(err, results)
+  if err then
+    vim.notify('Sqlr: ' .. err, vim.log.levels.ERROR, {})
+    return
+  end
+
+  if not results then
+    vim.notify('Executed Successfully', vim.log.levels.INFO, {})
+    return
+  end
+
+  local messages_lines = {}
+  for _, result in ipairs(results) do
+    if result.message and vim.fn.empty(result.message) == 0 then
+      for _, line in ipairs(vim.split(result.message, '\n')) do
+        table.insert(messages_lines, line)
+      end
+    end
+
+    if result.error and vim.fn.empty(result.error) == 0 then
+      for _, line in ipairs(vim.split(result.error, '\n')) do
+        table.insert(messages_lines, 'ERROR: '..line)
+      end
+    end
+  end
+
+  if #messages_lines == 0 then
+    vim.notify('Executed Successfully', vim.log.levels.INFO, {})
+    return
+  end
+
+  init_buffers()
+
+  if not M.windows then
+    M.windows = {}
+  end
+
+  vim.api.nvim_set_option_value('readonly', false, { scope = 'local', buf = M.buffers.messages })
+  vim.api.nvim_buf_set_lines(M.buffers.messages, 0, -1, true, messages_lines)
+  vim.api.nvim_set_option_value('readonly', true, { scope = 'local', buf = M.buffers.messages })
+
+  if not M.windows.results then
+    M.windows.results = create_popup_window(M.buffers.messages)
+  end
+
+  vim.notify(('%s :: Showing Messages'):format(name), vim.log.levels.INFO, {})
+  M.toggle_results('messages')
+  print('Showing Messages')
+end
+
+---execute sql (expecting no results); can be supplied as:
+--- - a string (expected to contain only one statement)
+--- - a list of strings (lines, in that case)
+--- - a range of lines (start, end) of the current buffer
+--- - the current visual selection (NOTE: whole lines will always be selected)
+---@param opts Sqlr.run_opts?
+---@param s? string|integer sql or start of range
+---@param e? integer end of range
+function M.exec(opts, s, e)
+  local _name = name .. '.run'
+
+  opts = vim.tbl_deep_extend(
+    'keep',
+    opts or {},
+    { callback = default_exec_callback }
+  )
+
+  ---@type Sqlr.env, string
+  local env, db = get_exec_env(opts)
+
+  assert(env, 'Environment not set')
+  assert(db,  'Database not set')
+
+  local lines
+  if s then
+    if type(s) == 'string' then
+      vim.notify(('%s :: passed sql as string'):format(_name), vim.log.levels.TRACE, {})
+      lines = { (s:gsub('\n', '\r')) }
+    elseif type(s) == 'table' then
+      lines = s
+    else
+      vim.notify(('%s :: passed range'):format(_name), vim.log.levels.TRACE, {})
+      if not e or e == -1 then
+        e = vim.api.nvim_buf_line_count(0)
+      end
+      lines = vim.api.nvim_buf_get_lines(0, s, e, true)
+    end
+  else -- get range from visual selection
+    vim.notify(('%s :: determining sql from visual selection'):format(_name), vim.log.levels.TRACE, {})
+
+    -- leave visual mode so that '< and '> get set
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes('<esc>', true, false, true),
+      'itx',
+      false)
+
+    s = vim.api.nvim_buf_get_mark(0, '<')[1]
+    e = vim.api.nvim_buf_get_mark(0, '>')[1]
+    assert(s > 0, '< mark not set')
+    assert(e > 0, '> mark not set')
+
+    lines = vim.api.nvim_buf_get_lines(0, s-1, e, true)
+  end
+
+  assert(lines and #lines > 0, 'No sql provided')
+
+  -- wrap the message in \x02 and \x03 to tell the server to execute all
+  -- of the lines as one, instead of executing statement-by-statement
+  local batch_separator = vendors[env.type].batch_separator
+  local data
+  if batch_separator then
+    --emulate SSMS and Oracle SQL Developer behavior of using tokens
+    --like 'GO' and '/' to separate batches in the same script/worksheet
+    batch_separator = '^%s*' .. batch_separator .. '%s*$'
+    local batches = {}
+    local batch = ''
+    for _, line in ipairs(lines) do
+      if line:match(batch_separator) then
+        table.insert(batches, '\x02\n' .. batch .. '\x03')
+        batch = ''
+      else
+        batch = batch .. line .. '\n'
+      end
+    end
+    data = table.concat(batches, '')
+  else
+    data = '\x02\n' .. table.concat(lines, '\n') .. '\x03'
+  end
+
+  M.client
+    :connect(env, db)
+    :send(data, opts.callback)
+    -- :send(data, function(err, results) dd { err, results } end)
+    --[[
+    :send(data, function(err, results)
+        dd { err, results }
+        opts.callback(err, results)
+      end)
+    --]]
 end
 
 -- SETUP =====================================================================

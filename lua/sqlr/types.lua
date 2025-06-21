@@ -20,6 +20,7 @@
 ---this function may have side-effects, such as moving the cursor
 ---@field csview_pre_set_cursor? fun(s:integer, e:integer, lines:string[]):string[]}
 ---@field parse_errors? fun(output:{stdout:string[], stderr:string[]}):{stdout:string[], stderr:string[]}
+---@field batch_separator string string that denotes when the batch ends (matches whole line)
 
 ---@class Sqlr.env
 ---@field name string name to use for identifying/logging/caching purposes
