@@ -6,26 +6,31 @@ local client= require('sqlr.client')
 
 ---@type {loclist?: table[]}
 M.results = {}
+M.buffers = {}
 
 -- UTILITY FUNCTIONS =========================================================
 local logfn = function(level)
   return function(msg, fname)
     local _name
-    if fname == true then
-      _name = name .. ' :: '
-    elseif not fname then
-      _name = ''
+    if not fname then
+      _name = nil
+    elseif fname == true then
+      _name = name
     else
-      _name = ('%s.%s :: '):format(name, fname)
+      _name = name..'.'..fname
     end
-    vim.notify(_name..msg, level, {})
+    if _name then
+      vim.notify(_name..(msg and ' :: '..msg or ''), level, {})
+    else
+      vim.notify(assert(msg, 'msg required'), level, {})
+    end
   end
 end
 
 local log = {
   error   = logfn(vim.log.levels.ERROR),
   info    = logfn(vim.log.levels.INFO),
-  warning = logfn(vim.log.levels.WARNING),
+  warning = logfn(vim.log.levels.WARN),
   debug   = logfn(vim.log.levels.DEBUG),
   trace   = logfn(vim.log.levels.TRACE),
 }
@@ -64,7 +69,7 @@ function M.env_info()
   else
     msg = ('Using %s:%s'):format(M.env.name, M.db)
   end
-  log.info(msg)
+  log.info(msg, true)
 end
 
 ---return `s` only if it is a supported database vendor
@@ -398,6 +403,57 @@ local vendors = {
       end
       return lines
     end,
+    ---return whether the given lines contain multiple sql statements (not
+    ---inside a block)
+    ---@param lines any
+    ---@return boolean
+    check_for_multiple_statements = function(lines)
+      -- use tree-sitter to see if the program node directly contains multiple
+      -- statements, or a block. If multiple statements (or block) are found, return
+      -- true, else return false
+      log.trace(vim.inspect({ vendor = 'oracle', lines = lines }), 'check_for_multiple_statements')
+
+      -- get or create our scratch-pad
+      if not M.buffers.scratch then
+        M.buffers.scratch = vim.api.nvim_create_buf(false, true)
+      end
+      local buf_id = M.buffers.scratch
+      vim.api.nvim_buf_set_lines(buf_id, 0, -1, true, lines)
+
+      local parser = vim.treesitter.get_parser(buf_id, 'sql')
+      assert(parser, 'could not get parser for sql buffer')
+      local tree = parser:parse()[1]
+      local query = vim.treesitter.query.parse('sql', [[
+        (program
+          (statement) @statement
+          )
+        (program
+          (block) @block
+          )
+        ]])
+      -- 3) check if the program node has multiple statements
+      local block_count = 0
+      local statement_count = 0
+      for id, node in query:iter_captures(tree:root(), buf_id) do
+        local node_name = query.captures[id] -- name of the capture in the query
+        local node_type = node:type() -- type of the captured node
+        log.trace(vim.inspect({ node_name = node_name, node_type = node_type }))
+        if node_name == 'block' then
+          block_count = block_count + 1
+        elseif node_name == 'statement' then
+          statement_count = statement_count + 1
+        end
+      end
+
+      -- clear scratch-pad
+      vim.api.nvim_buf_set_lines(buf_id, 0, -1, true, {})
+
+      if block_count + statement_count > 1 then
+        return true
+      else
+        return false
+      end
+    end,
     parse_errors = function(output)
       local cleaned_output = {
         stdout = {},
@@ -698,41 +754,44 @@ local function db_val_to_string(val)
 end
 
 local function init_buffers()
-  if not M.buffers then
-    M.buffers = {
-      results  = vim.api.nvim_create_buf(true, true),
-      messages = vim.api.nvim_create_buf(true, true),
-    }
+  if M.buffers.results and M.buffers.messages then return end
 
-    vim.api.nvim_set_option_value('filetype', 'sqlresults', { scope = 'local', buf = M.buffers.results })
+  if not M.buffers.results then
+    M.buffers.results  = vim.api.nvim_create_buf(true, true)
+  end
 
-    if M.opts.viewer == 'csvview' then
-      M.buffers.csvview = vim.api.nvim_create_buf(true, true)
-      csvview_setup()
-    end
+  if not M.buffers.messages then
+      M.buffers.messages = vim.api.nvim_create_buf(true, true)
+  end
 
-    for _, buf in pairs(M.buffers) do
-      vim.api.nvim_set_option_value('buftype', 'nofile', { scope = 'local', buf = buf })
+  vim.api.nvim_set_option_value('filetype', 'sqlresults', { scope = 'local', buf = M.buffers.results })
 
-      vim.api.nvim_buf_set_keymap(buf, 'n', 'R', '', {
-        desc = 'Toggle Results View',
-        callback = function()
-          if buf == M.buffers.results then
-            return
-          end
-          M.toggle_results('results')
+  if M.opts.viewer == 'csvview' and not M.buffers.csvview then
+    M.buffers.csvview = vim.api.nvim_create_buf(true, true)
+    csvview_setup()
+  end
+
+  for _, buf in pairs(M.buffers) do
+    vim.api.nvim_set_option_value('buftype', 'nofile', { scope = 'local', buf = buf })
+
+    vim.api.nvim_buf_set_keymap(buf, 'n', 'R', '', {
+      desc = 'Toggle Results View',
+      callback = function()
+        if buf == M.buffers.results then
+          return
         end
-      })
-      vim.api.nvim_buf_set_keymap(buf, 'n', 'M', '', {
-        desc = 'Toggle Messages View',
-        callback = function()
-          if buf == M.buffers.messages then
-            return
-          end
-          M.toggle_results('messages')
+        M.toggle_results('results')
+      end
+    })
+    vim.api.nvim_buf_set_keymap(buf, 'n', 'M', '', {
+      desc = 'Toggle Messages View',
+      callback = function()
+        if buf == M.buffers.messages then
+          return
         end
-      })
-    end
+        M.toggle_results('messages')
+      end
+    })
   end
 end
 
@@ -809,12 +868,16 @@ local function view_results(err, results)
   end
 
   -- populate location list with the beginning of each resultset
+  if not results_lines or #results_lines < 1 then
+    log.info('SQL Ran With No Results', false)
+    return
+  end
   M.results.loclist = vendors[M.env.type].get_results_starting_lines(results_lines)
   M.toggle_results('results')
 
   local count_resultsets = #vim.fn.getloclist(M.windows.results.win)
   if count_resultsets == 1 then
-    print('SQL Ran Successfully')
+    log.info('SQL Ran Successfully', false)
   else
     print(('SQL Ran Successfully. %d result-sets returned'):format(count_resultsets))
   end
@@ -834,6 +897,9 @@ end
 ---@param end_line? integer End line number (1-indexed, inclusive).
 ---@return string[] A list of SQL statements.
 local function parse_sql_statements(buf_id, start_line, end_line)
+  local _name = 'parse_sql_statements'
+  log.trace(vim.inspect { buf_id, start_line, end_line }, _name)
+
   local parser = vim.treesitter.get_parser(buf_id, 'sql')
   if not parser then
     return {}
@@ -944,6 +1010,7 @@ end
 ---@param e? integer end of range
 function M.run(opts, s, e)
   local _name = 'run'
+  log.trace(vim.inspect { opts, s, e }, _name)
 
   opts = vim.tbl_deep_extend('keep', opts or {}, {
     callback = view_results
@@ -1044,7 +1111,8 @@ end
 ---@param s? string|integer sql or start of range
 ---@param e? integer end of range
 function M.exec(opts, s, e)
-  local _name = name .. '.exec'
+  local _name = '.exec'
+  log.trace(vim.inspect { opts, s, e }, _name)
 
   opts = vim.tbl_deep_extend(
     'keep',
@@ -1082,27 +1150,36 @@ function M.exec(opts, s, e)
   -- of the lines as one, instead of executing statement-by-statement
   local batch_separator = vendors[env.type].batch_separator
   local data
+  local batches = {}
   if batch_separator then
+    local batch = ''
     --emulate SSMS and Oracle SQL Developer behavior of using tokens
     --like 'GO' and '/' to separate batches in the same script/worksheet
     batch_separator = '^%s*' .. batch_separator .. '%s*$'
-    local batches = {}
-    local batch = ''
     for _, line in ipairs(lines) do
       if line:match(batch_separator) then
-        table.insert(batches, '\x02\n' .. batch .. '\x03')
+        table.insert(batches, batch)
         batch = ''
       else
         batch = batch .. line .. '\n'
       end
     end
     if #batch > 0 then
-      table.insert(batches, '\x02\n' .. batch .. '\x03')
+      table.insert(batches, batch)
     end
-    data = table.concat(batches, '')
   else
-    data = '\x02\n' .. table.concat(lines, '\n') .. '\x03'
+    table.insert(batches, '\x02\n' .. table.concat(lines, '\n') .. '\x03')
   end
+
+  local check_for_multiple_statements = vendors[env.type].check_for_multiple_statements
+  data = table.concat(vim.tbl_map(function(batch)
+    if check_for_multiple_statements and check_for_multiple_statements(lines) then
+      batch = 'BEGIN\n' .. batch .. 'END;'
+    end
+    return '\x02\n' .. batch .. '\x03'
+  end, batches), '')
+
+  log.trace(vim.inspect { data = data }, _name)
 
   M.client
     :connect(env, db)
