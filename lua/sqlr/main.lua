@@ -522,10 +522,71 @@ local function csvview_cursor()
   end
 end
 
+---yank the current result-set from the results-csv-view and format it as
+---a SELECT statement such as one that can be used for inserting into a table
+---TODO: make work for SQL Server (currently only works for PL/SQL)
+local function yank_csv_to_select()
+  local lines = vim.api.nvim_buf_get_lines(M.buffers.csvview, 0, -1, true)
+
+  local records = vim.tbl_map(function(line)
+    return vim.split(line, '\t')
+  end, lines)
+
+  local fields = table.remove(records, 1)
+
+  local out_lines = {};
+  local function append(line) table.insert(out_lines, line) end
+  local indent = '    '
+  for i, record in ipairs(records) do
+    if #record ~= #fields then
+      vim.notify(('line: expected %d fields, got: %d'):format(i+1, #record, #fields), vim.log.levels.ERROR, {})
+      return
+    end
+
+    -- need to first loop through each record to determine which is the
+    -- longest so that I can align the column aliases in the output
+    local longest = 0
+    for j=1, #record do
+      local field = record[j]
+      if field == '<nil>' then
+        field = 'NULL'
+      elseif field == '' then
+        field = "''"
+      elseif field:match('%D') and not field:match('^%-[[0-9]%.]+') then
+        field = ("'%s'"):format(field)
+      end
+      if #field > longest then longest = #field end
+      record[j] = field
+    end
+
+    append('SELECT')
+    for j, field in ipairs(record) do
+      local comma = j == 1 and ' ' or ','
+      local fieldname = fields[j]
+      local padding = vim.fn['repeat'](' ', longest - #field)
+      append(('%s%s%s%s AS %s'):format(indent, comma, field, padding, fieldname))
+    end
+
+    local semicolon = i == #records and ';' or ''
+    append('FROM DUAL' .. semicolon)
+    if semicolon == '' then
+      append('UNION ALL')
+    end
+  end
+
+  assert(0 == vim.fn.setreg('', out_lines, 'l'),
+    'failed to insert out_lines into unnamed register')
+  vim.notify('Yank: results -> SELECT', vim.log.levels.INFO, {})
+end
+
 ---perform all of the buffer-specific setup for working with csvview
 local function csvview_setup()
   local buf = M.buffers.csvview
   vim.api.nvim_set_option_value('filetype', 'tsv', { scope = 'local', buf = buf })
+  vim.api.nvim_buf_set_keymap(M.buffers.csvview, 'n', '<c-y>', '', {
+    desc = 'yank results and format as select statement (useful for inserting records into a table)',
+    callback = yank_csv_to_select,
+  })
 
   vim.api.nvim_buf_set_keymap(M.buffers.results, 'n', '<cr>', '', {
     desc = 'display current resultset in csvview buffer',
