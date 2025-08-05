@@ -8,6 +8,28 @@ local client= require('sqlr.client')
 M.results = {}
 
 -- UTILITY FUNCTIONS =========================================================
+local logfn = function(level)
+  return function(msg, fname)
+    local _name
+    if fname == true then
+      _name = name .. ' :: '
+    elseif not fname then
+      _name = ''
+    else
+      _name = ('%s.%s :: '):format(name, fname)
+    end
+    vim.notify(_name..msg, level, {})
+  end
+end
+
+local log = {
+  error   = logfn(vim.log.levels.ERROR),
+  info    = logfn(vim.log.levels.INFO),
+  warning = logfn(vim.log.levels.WARNING),
+  debug   = logfn(vim.log.levels.DEBUG),
+  trace   = logfn(vim.log.levels.TRACE),
+}
+
 local function not_empty(str)
   return str ~= vim.NIL and vim.fn.empty(str) == 0
 end
@@ -42,7 +64,7 @@ function M.env_info()
   else
     msg = ('Using %s:%s'):format(M.env.name, M.db)
   end
-  vim.notify(msg, vim.log.levels.INFO, {})
+  log.info(msg)
 end
 
 ---return `s` only if it is a supported database vendor
@@ -60,7 +82,7 @@ end
 ---@param env_name string either filename or absolute path of environment file
 ---@return Sqlr.env?
 local function get_env(env_name)
-  local _name = name .. '.get_env'
+  local _name = 'get_env'
   local file
   local stat = vim.uv.fs_stat(env_name)
   if stat then
@@ -73,7 +95,7 @@ local function get_env(env_name)
     })
 
     if #found_envs == 0 then
-      vim.notify(('%s: Unable to find environment "%s"'):format(name, env_name), "error", {})
+      log.error(('Unable to find environment "%s"'):format(env_name), _name)
       return
     end
     file = found_envs[1]
@@ -105,10 +127,10 @@ end
 ---find and globally set the given environment file (lua)
 ---@param env_name path name (with extension) of file in opts.env_dir
 function M.set_env(env_name)
-  local _name = name..'.set_env'
+  local _name = 'set_env'
   local ok, env = pcall(get_env, env_name)
   if not ok or not env then
-    vim.notify(('%s :: unable to load environment "%s": %s'):format(_name, env_name, env), vim.log.levels.ERROR, {})
+    log.error(('Unable to load environment "%s": %s'):format(env_name, env), _name)
     return
   end
   M.env = env
@@ -132,7 +154,7 @@ end
 function M.pick_env()
   local success, picker = pcall(require, 'snacks.picker')
   if not success then
-    vim.notify(('%s :: snacks.nvim required for picker functionality'):format(name), "error", {})
+    log.error('snacks.nvim required for picker functionality', 'pick_env')
     return
   end
 
@@ -181,8 +203,8 @@ end
 ---set the given database to be used for queries
 ---@param db_name string one of the database names defined in `env`
 function M.set_db(db_name)
-  local _name = name .. '.set_db'
-  assert(M.env, ('%s :: env not set'):format(_name))
+  local _name = 'set_db'
+  assert(M.env, ('sqlr.%s :: env not set'):format(_name))
   assert(db_name and db_name ~= '', ('%s :: db required'):format(_name))
 
   local found
@@ -194,7 +216,7 @@ function M.set_db(db_name)
   end
 
   if not found then
-    vim.notify(('%s :: "%s" database not defined for %s'):format(name, db_name, M.env.name))
+    log.error(('"%s" database not defined for %s'):format(db_name, M.env.name), _name)
     return
   end
 
@@ -205,12 +227,12 @@ end
 function M.pick_db()
   local success, picker = pcall(require, 'snacks.picker')
   if not success then
-    vim.notify(('%s :: snacks.nvim required for picker functionality'):format(name), "error", {})
+    log.error('snacks.nvim required for picker functionality', true)
     return
   end
 
   if not M.env then
-    vim.notify(('%s :: Select an environment first'):format(name), "error", {})
+    log.error('Select an environment first')
     return
   end
 
@@ -446,7 +468,7 @@ end
 ---@param mode 'results' | 'messages' | 'csvview'
 function M.toggle_results(mode)
   if not M.buffers or not M.windows then
-    vim.notify(('%s :: No results to show'):format(name), vim.log.levels.ERROR, {})
+    log.error('No results to show')
     return
   end
 
@@ -526,6 +548,7 @@ end
 ---a SELECT statement such as one that can be used for inserting into a table
 ---TODO: make work for SQL Server (currently only works for PL/SQL)
 local function yank_csv_to_select()
+  local _name = 'yank_csv_to_select'
   local lines = vim.api.nvim_buf_get_lines(M.buffers.csvview, 0, -1, true)
 
   local records = vim.tbl_map(function(line)
@@ -539,7 +562,7 @@ local function yank_csv_to_select()
   local indent = '    '
   for i, record in ipairs(records) do
     if #record ~= #fields then
-      vim.notify(('line: expected %d fields, got: %d'):format(i+1, #record, #fields), vim.log.levels.ERROR, {})
+      log.error(('line: expected %d fields, got: %d'):format(i+1, #record, #fields), _name)
       return
     end
 
@@ -576,7 +599,7 @@ local function yank_csv_to_select()
 
   assert(0 == vim.fn.setreg('', out_lines, 'l'),
     'failed to insert out_lines into unnamed register')
-  vim.notify('Yank: results -> SELECT', vim.log.levels.INFO, {})
+  log.info 'Yank: results -> SELECT'
 end
 
 ---perform all of the buffer-specific setup for working with csvview
@@ -718,7 +741,7 @@ end
 ---@param results Sqlr.QueryResult[]
 local function view_results(err, results)
   if err then
-    vim.notify('Sqlr: ' .. err, vim.log.levels.ERROR, {})
+    log.err(err, 'view_results')
     return
   end
 
@@ -779,7 +802,7 @@ local function view_results(err, results)
   end
 
   if buf == M.buffers.messages then
-    vim.notify(('%s :: Showing Messages'):format(name), vim.log.levels.INFO, {})
+    log.info('Showing Messages', true)
     M.toggle_results('messages')
     print('Showing Messages')
     return
@@ -920,7 +943,7 @@ end
 ---@param s? string|integer sql or start of range
 ---@param e? integer end of range
 function M.run(opts, s, e)
-  local _name = name .. '.run'
+  local _name = 'run'
 
   opts = vim.tbl_deep_extend('keep', opts or {}, {
     callback = view_results
@@ -933,20 +956,18 @@ function M.run(opts, s, e)
   assert(db,  'Database not set')
 
   local statements
-  if s then
-    if type(s) == 'string' then
-      vim.notify(('%s :: passed sql as string'):format(_name), vim.log.levels.TRACE, {})
-      statements = { (s:gsub('\n', '\r')) }
-    else
-      vim.notify(('%s :: passed range'):format(_name), vim.log.levels.TRACE, {})
-      if not e or e == -1 then
-        e = vim.api.nvim_buf_line_count(0)
-      end
-      statements = parse_sql_statements(0, s, e)
-    end
-  else -- get range from visual selection
-    vim.notify(('%s :: determining sql from visual selection'):format(_name), vim.log.levels.TRACE, {})
+  if not s then
+    log.trace('Determining sql from visual selection', _name)
     statements = get_selected_lines()
+  elseif type(s) == 'string' then
+    log.trace('Passed sql as string', _name)
+    statements = { (s:gsub('\n', '\r')) }
+  else
+    log.trace('Passed range', _name)
+    if not e or e == -1 then
+      e = vim.api.nvim_buf_line_count(0)
+    end
+    statements = parse_sql_statements(0, s, e)
   end
 
   assert(statements and #statements > 0, 'No statements provided/found')
@@ -966,12 +987,12 @@ end
 
 local function default_exec_callback(err, results)
   if err then
-    vim.notify('Sqlr: ' .. err, vim.log.levels.ERROR, {})
+    log.error(err, true)
     return
   end
 
   if not results then
-    vim.notify('Executed Successfully', vim.log.levels.INFO, {})
+    log.info('SQL Executed Successfully')
     return
   end
 
@@ -991,7 +1012,7 @@ local function default_exec_callback(err, results)
   end
 
   if #messages_lines == 0 then
-    vim.notify('Executed Successfully', vim.log.levels.INFO, {})
+    log.info('SQL Executed Successfully')
     return
   end
 
@@ -1009,7 +1030,7 @@ local function default_exec_callback(err, results)
     M.windows.results = create_popup_window(M.buffers.messages)
   end
 
-  vim.notify(('%s :: Showing Messages'):format(name), vim.log.levels.INFO, {})
+  log.info('Showing Messages', true)
   M.toggle_results('messages')
   print('Showing Messages')
 end
@@ -1023,7 +1044,7 @@ end
 ---@param s? string|integer sql or start of range
 ---@param e? integer end of range
 function M.exec(opts, s, e)
-  local _name = name .. '.run'
+  local _name = name .. '.exec'
 
   opts = vim.tbl_deep_extend(
     'keep',
@@ -1039,20 +1060,21 @@ function M.exec(opts, s, e)
 
   local lines
   if not s then
-    vim.notify(('%s :: determining sql from visual selection'):format(_name), vim.log.levels.TRACE, {})
+    log.trace('Determining sql from visual selection', _name)
     lines = get_selected_lines()
   elseif type(s) == 'string' then
-      vim.notify(('%s :: passed sql as string'):format(_name), vim.log.levels.TRACE, {})
-      lines = { (s:gsub('\n', '\r')) }
-    elseif type(s) == 'table' then
-      lines = s
-    else
-      vim.notify(('%s :: passed range'):format(_name), vim.log.levels.TRACE, {})
-      if not e or e == -1 then
-        e = vim.api.nvim_buf_line_count(0)
-      end
-      lines = vim.api.nvim_buf_get_lines(0, s, e, true)
+    log.trace('Passed sql as string', _name)
+    lines = { (s:gsub('\n', '\r')) }
+  elseif type(s) == 'table' then
+    log.trace('Passed lines of sql', _name)
+    lines = s
+  else
+    log.trace('Passed range', _name)
+    if not e or e == -1 then
+      e = vim.api.nvim_buf_line_count(0)
     end
+    lines = vim.api.nvim_buf_get_lines(0, s, e, true)
+  end
 
   assert(lines and #lines > 0, 'No sql provided')
 
@@ -1161,11 +1183,11 @@ local function create_user_commands()
     function()
       if not M.client then return end
       if not M.client.process then
-        vim.notify('Unable to stop sqlrepl server process (is it running locally?)')
+        log.warning('Unable to stop sqlrepl server process (is it running locally?)', true)
         return
       end
 
-      vim.notify('SQLR: Stopping Server', vim.log.levels.INFO, {})
+      log.info('Stopping Server')
       M.client:stop_server()
 
       for _, conn in pairs(M.client.connections) do
@@ -1176,7 +1198,7 @@ local function create_user_commands()
       end
 
       M.client = client.Client.new(M.opts.client)
-      vim.notify('SQLR: Server Restarted', vim.log.levels.INFO, {})
+      log.info('Server Restarted')
     end,
     {
       desc = 'Restart the sqlrepl server (only works if running locally)',
