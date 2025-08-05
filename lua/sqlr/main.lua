@@ -894,6 +894,23 @@ local function get_exec_env(opts)
   return env, db
 end
 
+---return a list of the currently visually selected lines
+---@return string[]
+local function get_selected_lines()
+  -- leave visual mode so that '< and '> get set
+  vim.api.nvim_feedkeys(
+    vim.api.nvim_replace_termcodes('<esc>', true, false, true),
+    'itx',
+    false)
+
+  local s = vim.api.nvim_buf_get_mark(0, '<')[1]
+  local e = vim.api.nvim_buf_get_mark(0, '>')[1]
+  assert(s > 0, '< mark not set')
+  assert(e > 0, '> mark not set')
+
+  return vim.api.nvim_buf_get_lines(0, s-1, e, true)
+end
+
 ---run sql and display results; can be supplied as:
 --- - a string (expected to contain only one statement)
 --- - a list of strings (lines, in that case)
@@ -929,19 +946,7 @@ function M.run(opts, s, e)
     end
   else -- get range from visual selection
     vim.notify(('%s :: determining sql from visual selection'):format(_name), vim.log.levels.TRACE, {})
-
-    -- leave visual mode so that '< and '> get set
-    vim.api.nvim_feedkeys(
-      vim.api.nvim_replace_termcodes('<esc>', true, false, true),
-      'itx',
-      false)
-
-    s = vim.api.nvim_buf_get_mark(0, '<')[1]
-    e = vim.api.nvim_buf_get_mark(0, '>')[1]
-    assert(s > 0, '< mark not set')
-    assert(e > 0, '> mark not set')
-
-    statements = parse_sql_statements(0, s-1, e)
+    statements = get_selected_lines()
   end
 
   assert(statements and #statements > 0, 'No statements provided/found')
@@ -1033,8 +1038,10 @@ function M.exec(opts, s, e)
   assert(db,  'Database not set')
 
   local lines
-  if s then
-    if type(s) == 'string' then
+  if not s then
+    vim.notify(('%s :: determining sql from visual selection'):format(_name), vim.log.levels.TRACE, {})
+    lines = get_selected_lines()
+  elseif type(s) == 'string' then
       vim.notify(('%s :: passed sql as string'):format(_name), vim.log.levels.TRACE, {})
       lines = { (s:gsub('\n', '\r')) }
     elseif type(s) == 'table' then
@@ -1046,22 +1053,6 @@ function M.exec(opts, s, e)
       end
       lines = vim.api.nvim_buf_get_lines(0, s, e, true)
     end
-  else -- get range from visual selection
-    vim.notify(('%s :: determining sql from visual selection'):format(_name), vim.log.levels.TRACE, {})
-
-    -- leave visual mode so that '< and '> get set
-    vim.api.nvim_feedkeys(
-      vim.api.nvim_replace_termcodes('<esc>', true, false, true),
-      'itx',
-      false)
-
-    s = vim.api.nvim_buf_get_mark(0, '<')[1]
-    e = vim.api.nvim_buf_get_mark(0, '>')[1]
-    assert(s > 0, '< mark not set')
-    assert(e > 0, '> mark not set')
-
-    lines = vim.api.nvim_buf_get_lines(0, s-1, e, true)
-  end
 
   assert(lines and #lines > 0, 'No sql provided')
 
