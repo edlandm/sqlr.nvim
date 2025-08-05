@@ -1022,6 +1022,9 @@ function M.exec(opts, s, e)
         batch = batch .. line .. '\n'
       end
     end
+    if #batch > 0 then
+      table.insert(batches, '\x02\n' .. batch .. '\x03')
+    end
     data = table.concat(batches, '')
   else
     data = '\x02\n' .. table.concat(lines, '\n') .. '\x03'
